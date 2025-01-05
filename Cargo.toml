@@ -9,6 +9,7 @@ edition = "2021"
 teloxide = { version = "0.13", features = ["macros", "rustls"] }
 ollama-rs = { git = "https://github.com/pepperoni21/ollama-rs", features = [
     "stream",
+    "rustls",
 ] }
 
 tokio = { version = "1.8", features = ["full"] }
