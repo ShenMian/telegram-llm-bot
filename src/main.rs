@@ -1,6 +1,17 @@
 use futures::stream::StreamExt;
 use ollama_rs::{generation::completion::request::GenerationRequest, Ollama};
 use teloxide::prelude::*;
+use teloxide::{dispatching::UpdateFilterExt, utils::command::BotCommands};
+
+#[derive(BotCommands, Clone, Debug)]
+#[command(
+    rename_rule = "lowercase",
+    description = "These commands are supported:"
+)]
+enum Command {
+    #[command(description = "Display this message")]
+    Help,
+}
 
 #[tokio::main]
 async fn main() {
@@ -10,7 +21,20 @@ async fn main() {
     let bot = Bot::from_env();
     log::info!("Bot started");
 
-    teloxide::repl(bot, handle_message).await;
+    Dispatcher::builder(
+        bot,
+        dptree::entry()
+            .branch(
+                Update::filter_message()
+                    .filter_command::<Command>()
+                    .endpoint(handle_command),
+            )
+            .branch(Update::filter_message().endpoint(handle_message)),
+    )
+    .enable_ctrlc_handler()
+    .build()
+    .dispatch()
+    .await;
 }
 
 async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
@@ -43,6 +67,19 @@ async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
 
     log::info!("{}: {}", message.chat.username().unwrap(), prompt);
     log::info!("LLM: {}", buffer);
+
+    Ok(())
+}
+
+async fn handle_command(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+    log::info!("{} called command {:?}", msg.chat.username().unwrap(), cmd);
+
+    match cmd {
+        Command::Help => {
+            bot.send_message(msg.chat.id, Command::descriptions().to_string())
+                .await?
+        }
+    };
 
     Ok(())
 }
