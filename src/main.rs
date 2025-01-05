@@ -5,8 +5,7 @@ use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage},
     Ollama,
 };
-use teloxide::prelude::*;
-use teloxide::{dispatching::UpdateFilterExt, utils::command::BotCommands};
+use teloxide::{dispatching::UpdateFilterExt, prelude::*, utils::command::BotCommands};
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(
@@ -25,7 +24,7 @@ struct Context {
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
+    dotenvy::dotenv().unwrap();
     pretty_env_logger::init();
 
     let context = Arc::new(Context {
@@ -36,29 +35,27 @@ async fn main() {
     let bot = Bot::from_env();
     log::info!("Bot started");
 
-    Dispatcher::builder(
-        bot,
-        dptree::entry()
-            .branch(
-                Update::filter_message()
-                    .filter_command::<Command>()
-                    .endpoint(handle_command),
-            )
-            .branch(Update::filter_message().endpoint(handle_message)),
-    )
-    .dependencies(dptree::deps![context])
-    .enable_ctrlc_handler()
-    .build()
-    .dispatch()
-    .await;
+    let schema = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(handle_command),
+        )
+        .branch(Update::filter_message().endpoint(handle_message));
+    let mut dispatcher = Dispatcher::builder(bot, schema)
+        .dependencies(dptree::deps![context])
+        .enable_ctrlc_handler()
+        .build();
+    dispatcher.dispatch().await;
 }
 
 async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> ResponseResult<()> {
-    let model = "qwen2.5:latest";
-    let prompt = msg.text().unwrap();
+    let message = bot.send_message(msg.chat.id, "...").await.unwrap();
 
     let user_id = msg.from.as_ref().unwrap().id;
 
+    let model = "qwen2.5:latest";
+    let prompt = msg.text().unwrap();
     let mut stream = context
         .ollama
         .send_chat_messages_with_history_stream(
@@ -70,8 +67,6 @@ async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> Respon
         )
         .await
         .unwrap();
-
-    let message = bot.send_message(msg.chat.id, "...").await.unwrap();
 
     let mut tokens = 0;
     let mut response = String::new();
