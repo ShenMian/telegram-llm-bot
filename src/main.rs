@@ -13,6 +13,10 @@ use teloxide::{dispatching::UpdateFilterExt, prelude::*, utils::command::BotComm
     description = "These commands are supported:"
 )]
 enum Command {
+    #[command(description = "Start the bot")]
+    Start,
+    #[command(description = "Clear chat history")]
+    Clear,
     #[command(description = "Display this message")]
     Help,
 }
@@ -90,13 +94,26 @@ async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> Respon
     Ok(())
 }
 
-async fn handle_command(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+async fn handle_command(
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+    context: Arc<Context>,
+) -> ResponseResult<()> {
     log::info!("{} called command {:?}", msg.chat.username().unwrap(), cmd);
 
     match cmd {
+        Command::Start => {
+            bot.send_message(msg.chat.id, "Hello!").await?;
+        }
+        Command::Clear => {
+            context.history.lock().unwrap().clear();
+            bot.send_message(msg.chat.id, "Chat history cleared")
+                .await?;
+        }
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
-                .await?
+                .await?;
         }
     };
 
