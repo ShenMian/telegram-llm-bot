@@ -1,5 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use futures::stream::StreamExt;
-use ollama_rs::{generation::completion::request::GenerationRequest, Ollama};
+use ollama_rs::{
+    generation::chat::{request::ChatMessageRequest, ChatMessage},
+    Ollama,
+};
 use teloxide::prelude::*;
 use teloxide::{dispatching::UpdateFilterExt, utils::command::BotCommands};
 
@@ -13,10 +18,20 @@ enum Command {
     Help,
 }
 
+struct Context {
+    ollama: Ollama,
+    history: Arc<Mutex<Vec<ChatMessage>>>,
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
     pretty_env_logger::init();
+
+    let context = Arc::new(Context {
+        ollama: Ollama::default(),
+        history: Arc::new(Mutex::new(Vec::new())),
+    });
 
     let bot = Bot::from_env();
     log::info!("Bot started");
@@ -31,42 +46,51 @@ async fn main() {
             )
             .branch(Update::filter_message().endpoint(handle_message)),
     )
+    .dependencies(dptree::deps![context])
     .enable_ctrlc_handler()
     .build()
     .dispatch()
     .await;
 }
 
-async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
-    let ollama = Ollama::default();
-
+async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> ResponseResult<()> {
     let model = "qwen2.5:latest";
     let prompt = msg.text().unwrap();
 
-    let mut stream = ollama
-        .generate_stream(GenerationRequest::new(
-            model.to_string(),
-            prompt.to_string(),
-        ))
+    let user_id = msg.from.as_ref().unwrap().id;
+
+    let mut stream = context
+        .ollama
+        .send_chat_messages_with_history_stream(
+            context.history.clone(),
+            ChatMessageRequest::new(
+                model.to_string(),
+                vec![ChatMessage::user(prompt.to_string())],
+            ),
+        )
         .await
         .unwrap();
 
     let message = bot.send_message(msg.chat.id, "...").await.unwrap();
 
-    let mut buffer = String::new();
-    while let Some(res) = stream.next().await {
-        let responses = res.unwrap();
-        for response in responses {
-            buffer += &response.response;
-            let suffix = if response.done { "" } else { "..." };
-            bot.edit_message_text(message.chat.id, message.id, format!("{buffer} {suffix}"))
+    let mut tokens = 0;
+    let mut response = String::new();
+    while let Some(Ok(res)) = stream.next().await {
+        response += res.message.content.as_str();
+
+        tokens += 1;
+        if tokens % 5 == 0 {
+            bot.edit_message_text(message.chat.id, message.id, format!("{response} ..."))
                 .await
                 .unwrap();
         }
     }
+    bot.edit_message_text(message.chat.id, message.id, &response)
+        .await
+        .unwrap();
 
-    log::info!("{}: {}", message.chat.username().unwrap(), prompt);
-    log::info!("LLM: {}", buffer);
+    log::info!("{} ({user_id}): {prompt}", message.chat.username().unwrap());
+    log::info!("LLM: {response}");
 
     Ok(())
 }
