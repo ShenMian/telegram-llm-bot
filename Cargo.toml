@@ -6,7 +6,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
-teloxide = { version = "0.13", features = ["macros"] }
+teloxide = { version = "0.13", features = ["macros", "rustls"] }
 ollama-rs = { git = "https://github.com/ShenMian/ollama-rs", features = [
     "stream",
 ] }
