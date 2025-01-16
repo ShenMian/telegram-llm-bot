@@ -1,4 +1,4 @@
-# llm-bot
+# Telegram LLM Bot
 
 A Telegram bot for LLM chat with [Ollama].
 
