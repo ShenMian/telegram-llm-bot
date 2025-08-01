@@ -1,11 +1,17 @@
-use std::sync::{Arc, Mutex};
-
-use futures::stream::StreamExt;
-use ollama_rs::{
-    generation::chat::{request::ChatMessageRequest, ChatMessage},
-    Ollama,
+use async_openai::{
+    config::OpenAIConfig,
+    types::{
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+    },
+    Client,
 };
-use teloxide::{dispatching::UpdateFilterExt, prelude::*, utils::command::BotCommands};
+use futures::stream::StreamExt;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use teloxide::{
+    dispatching::UpdateFilterExt, prelude::*, types::UserId, utils::command::BotCommands,
+};
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(
@@ -22,8 +28,8 @@ enum Command {
 }
 
 struct Context {
-    ollama: Ollama,
-    history: Arc<Mutex<Vec<ChatMessage>>>,
+    openai: Client<OpenAIConfig>,
+    histories: Arc<Mutex<HashMap<UserId, Vec<ChatCompletionRequestMessage>>>>,
 }
 
 #[tokio::main]
@@ -31,13 +37,17 @@ async fn main() {
     dotenvy::dotenv().unwrap();
     pretty_env_logger::init();
 
-    let context = Arc::new(Context {
-        ollama: Ollama::default(),
-        history: Arc::new(Mutex::new(Vec::new())),
-    });
-
     let bot = Bot::from_env();
     log::info!("Bot started");
+
+    let config = OpenAIConfig::new()
+        .with_api_base(std::env::var("OPENAI_API_BASE").unwrap())
+        .with_api_key(std::env::var("OPENAI_API_KEY").unwrap());
+
+    let context = Arc::new(Context {
+        openai: Client::with_config(config),
+        histories: Arc::new(Mutex::new(HashMap::new())),
+    });
 
     let schema = dptree::entry()
         .branch(
@@ -58,24 +68,40 @@ async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> Respon
 
     let user_id = msg.from.as_ref().unwrap().id;
 
-    let model = "qwen2.5:latest";
+    let model = "qwen-plus";
     let prompt = msg.text().unwrap();
-    let mut stream = context
-        .ollama
-        .send_chat_messages_with_history_stream(
-            context.history.clone(),
-            ChatMessageRequest::new(
-                model.to_string(),
-                vec![ChatMessage::user(prompt.to_string())],
-            ),
-        )
-        .await
+
+    let user_history = context
+        .histories
+        .lock()
+        .unwrap()
+        .entry(user_id)
+        .or_default()
+        .clone();
+
+    let mut request_messages = user_history;
+    request_messages.push(
+        ChatCompletionRequestUserMessageArgs::default()
+            .content(prompt)
+            .build()
+            .unwrap()
+            .into(),
+    );
+
+    let request = CreateChatCompletionRequestArgs::default()
+        .model(model)
+        .messages(request_messages)
+        .build()
         .unwrap();
+
+    let mut stream = context.openai.chat().create_stream(request).await.unwrap();
 
     let mut tokens = 0;
     let mut response = String::new();
     while let Some(Ok(res)) = stream.next().await {
-        response += res.message.content.as_str();
+        if let Some(content) = res.choices[0].delta.content.as_deref() {
+            response += content;
+        }
 
         tokens += 1;
         if tokens % 5 == 0 {
@@ -87,6 +113,30 @@ async fn handle_message(bot: Bot, msg: Message, context: Arc<Context>) -> Respon
     bot.edit_message_text(message.chat.id, message.id, &response)
         .await
         .unwrap();
+
+    {
+        let mut histories = context.histories.lock().unwrap();
+        let user_messages = histories.entry(user_id).or_default();
+        user_messages.push(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(prompt)
+                .build()
+                .unwrap()
+                .into(),
+        );
+        user_messages.push(
+            ChatCompletionRequestAssistantMessageArgs::default()
+                .content(response.clone())
+                .build()
+                .unwrap()
+                .into(),
+        );
+
+        // Keep only the last 10 messages
+        while user_messages.len() > 10 {
+            user_messages.remove(0);
+        }
+    }
 
     log::info!("{} ({user_id}): {prompt}", message.chat.username().unwrap());
     log::info!("LLM: {response}");
@@ -102,12 +152,19 @@ async fn handle_command(
 ) -> ResponseResult<()> {
     log::info!("{} called command {:?}", msg.chat.username().unwrap(), cmd);
 
+    let user_id = msg.from.as_ref().unwrap().id;
+
     match cmd {
         Command::Start => {
             bot.send_message(msg.chat.id, "Hello!").await?;
         }
         Command::Clear => {
-            context.history.lock().unwrap().clear();
+            {
+                let mut histories = context.histories.lock().unwrap();
+                if let Some(user_messages) = histories.get_mut(&user_id) {
+                    user_messages.clear();
+                }
+            }
             bot.send_message(msg.chat.id, "Chat history cleared")
                 .await?;
         }
